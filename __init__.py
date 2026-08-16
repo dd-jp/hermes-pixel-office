@@ -260,14 +260,16 @@ def build_state() -> Dict[str, Any]:
                 a["status"] = "working"
                 a["detail"] = ""
 
-    # Sweep stale + long-gone agents.
+    # Sweep stale + long-gone agents. A bot whose session has ended still
+    # stays in the office as an "idle" character (so every profile/bot is
+    # visible), and is only removed once its last activity goes stale.
     visible = []
     for a in agents.values():
         age = now - float(a.get("updated_at") or 0)
-        if a["status"] == "gone" and age > 20:
-            continue
-        if a["status"] == "done" and age > 120:
-            continue
+        # Ended or finished agents render as idle rather than disappearing.
+        if a["status"] in ("gone", "done"):
+            a["status"] = "idle"
+            a["detail"] = ""
         if age > _STALE_SECONDS:
             continue
         # Agents quiet for a bit are "idle", not eternally "thinking".
