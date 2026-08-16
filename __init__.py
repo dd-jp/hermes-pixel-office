@@ -114,22 +114,44 @@ def _maybe_trim(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 def _read_events() -> List[Dict[str, Any]]:
-    path = _events_path()
-    if not path.exists():
-        return []
-    out: List[Dict[str, Any]] = []
+    """Fold events from EVERY Hermes home that may host a pixel-office log.
+
+    Each profile (swe, researcher, …) resolves its own get_hermes_home(), so
+    the plugin writes per-profile events to `~/.hermes/profiles/<p>/pixel-office/`
+    — but the HTTP server on the shared port only folds the default home's log.
+    To show every bot in the office, aggregate the default log plus each
+    profile's log and tag every event with its originating profile.
+    """
+    homes: List[tuple[str, Path]] = []  # (profile_name, events_path)
+    base = get_hermes_home()
+    homes.append(("default", base / "pixel-office" / "events.jsonl"))
+    profiles_dir = base / "profiles"
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    out.append(json.loads(line))
-                except Exception:
-                    continue
+        if profiles_dir.is_dir():
+            for p in sorted(profiles_dir.iterdir()):
+                if p.is_dir():
+                    homes.append((p.name, p / "pixel-office" / "events.jsonl"))
     except Exception:
-        logger.debug("pixel-office read failed", exc_info=True)
+        pass
+
+    out: List[Dict[str, Any]] = []
+    for profile, path in homes:
+        if not path.exists():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    ev["_profile"] = profile
+                    out.append(ev)
+        except Exception:
+            logger.debug("pixel-office read failed: %s", path, exc_info=True)
     return out
 
 
@@ -164,6 +186,7 @@ def build_state() -> Dict[str, Any]:
                 "activity": "",
                 "detail": "",
                 "platform": ev.get("platform") or "",
+                "profile": ev.get("_profile") or "",
                 "first_seen": ev.get("ts", now),
                 "updated_at": ev.get("ts", now),
             }
@@ -181,7 +204,11 @@ def build_state() -> Dict[str, Any]:
             a = ensure(key, ev)
             a["status"] = "idle"
             plat = ev.get("platform") or ""
-            a["label"] = f"{plat or 'hermes'} {key[-6:]}"
+            prof = ev.get("_profile") or ""
+            if prof and prof != "default":
+                a["label"] = f"{prof} {key[-6:]}"
+            else:
+                a["label"] = f"{plat or 'hermes'} {key[-6:]}"
             a["detail"] = "session started"
         elif kind == "session_end":
             if key in agents:
